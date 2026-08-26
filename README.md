@@ -1,3 +1,186 @@
-# Autonomous Lawn Mower ROS 2 Workspace
+# Autonomous Mower Demo (ROS2)
 
-ROS 2 workspace containing packages and configurations for the mower project.
+A minimal but complete simulated autonomy stack for a ground vehicle, built to
+demonstrate the core engineering patterns behind autonomous turf-care /
+mower systems: sensing, localisation, planning, control, safety monitoring,
+and a vehicle-interface abstraction layer.
+
+Built as a focused technical project ahead of an Autonomy Systems Engineer
+interview, to have something concrete and honest to demo and discuss.
+It is **not** presented as production-grade or field-tested. Every
+simplification is flagged explicitly below.
+
+## Why this project
+
+The goal was to mirror the *shape* of a real autonomy stack: the same node
+boundaries, message flow, and safety architecture a real system would have,
+using synthetic data and simplified algorithms that are fully understandable
+and explainable, rather than opaque or copy-pasted. Nothing here is a black
+box: every design choice is one I can defend and extend on request.
+
+## Architecture          
+(Note: `vehicle_interface_node` and `vehicle_model_node` are demonstrated
+independently in this v1. `vehicle_interface_node`'s output isn't yet wired
+into `vehicle_model_node`'s input. Flagged explicitly below.)
+
+## Nodes and packages
+
+| Package | Node | Purpose |
+|---|---|---|
+| `mower_sensors` | `sensor_node` | Publishes synthetic GPS (`NavSatFix`), IMU (`Imu`), and range (`Range`) data |
+| `mower_localisation` | `localisation_node` | Fuses GPS + IMU into a pose estimate via complementary filter |
+| `mower_planner` | `planner_node` | Grid-based A* search, publishes a `nav_msgs/Path` |
+| `mower_control` | `vehicle_model_node` | 2D kinematic vehicle model, integrates `cmd_vel`, publishes odom + RViz2 marker |
+| `mower_control` | `control_node` | Proportional waypoint-following controller, path to `cmd_vel_raw` |
+| `mower_safety` | `safety_monitor_node` | Independent safety gate: monitors range, zeroes velocity on threshold breach |
+| `mower_vehicle_interface` | `vehicle_interface_node` | Simulated CAN/drive-by-wire abstraction with command-timeout safety |
+
+## Mapping to the job requirements
+
+**Lead integration of the autonomy stack (perception, localisation, planning, control)**
+
+All demonstrated as separate, correctly-bounded ROS2 nodes communicating
+over well-defined topics with standard message types: `sensor_node` feeds
+`localisation_node` and `planner_node`, which feed `control_node`, which
+feeds actuation. The project's core value is the integration pattern, not
+any single algorithm's sophistication.
+
+**Design and implement safety systems, including safety controllers and
+safe-stop functionality**
+
+`safety_monitor_node` is the centrepiece: an architecturally independent
+node that gates every velocity command based on live obstacle-range data,
+verified live to trigger and clear correctly at the threshold, actually
+zeroing the vehicle's motion rather than just logging a warning. See
+"Honest limitations" for what a real safety-critical implementation would
+need beyond this.
+
+**Develop/integrate embedded software and vehicle control interfaces (CAN,
+drive-by-wire)**
+
+`vehicle_interface_node` demonstrates the conceptual architecture: command
+translation into bus-style signals with arbitration IDs, plus a command
+timeout/heartbeat check, a real and important drive-by-wire safety
+behaviour (a stale/silent commander must not result in a stuck command).
+
+**Sensor integration (LiDAR, radar, cameras, GPS/IMU)**
+
+`sensor_node` publishes GPS, IMU, and a range reading (standing in for a
+single LiDAR/ultrasonic beam) using the actual standard ROS2 sensor message
+types, so downstream nodes see exactly the interface a real driver would
+produce.
+
+**Vehicle-level testing and validation, including field trials**
+
+Every node in this project was built with an explicit checkpoint and
+manually verified via live topic echo/hz before moving on, the same
+discipline (verify each layer independently before trusting the integrated
+system) that field trials apply at a larger scale. This is the area where
+the project is most obviously not a substitute for real field testing.
+
+**Functional safety activities (HARA, safety case, certification readiness)**
+
+Not implemented (out of scope for a few-hour project), but the safety
+monitor's design was deliberately chosen to illustrate a HARA-relevant
+concept: independent safety channels and single-point-of-failure analysis.
+See limitations below for the specific gap a real HARA would flag in this
+implementation.
+
+## Honest limitations: what's simplified or faked, and what it maps to
+
+This project prioritises being fully explainable over being maximally
+realistic. Every simplification below is one I can speak to directly and
+explain how it would differ in a production system.
+
+- **Sensor data is synthetic**, generated by simple deterministic math
+  (sine waves, drift), not real hardware or even a physics simulator. Real
+  driver nodes would produce this same message-type interface from actual
+  GPS/IMU/LiDAR hardware.
+- **Localisation is a complementary filter with a fixed blend weight**, not
+  a full EKF. A real system would likely use `robot_localization`'s
+  `ekf_node` (the standard ROS2 package for this), with proper covariance
+  propagation and a time-varying Kalman gain. The fusion reasoning
+  (GPS is accurate but noisy, low-rate, and can dropout; IMU is high-rate
+  but drifts unbounded) is the same reasoning a real EKF is built on.
+- **Planning is point-to-point A*, not coverage planning.** A real mower's
+  planning problem is typically coverage (mow 100% of a field, e.g. a
+  boustrophedon sweep pattern), and the map here is a small hand-coded
+  grid, not derived from perception or a surveyed field boundary. A*
+  itself is the same class of algorithm real systems use (e.g. Nav2's
+  grid-search-based planners).
+- **The vehicle model is purely kinematic**: no mass, inertia, wheel
+  slip, or terrain interaction (grass, slopes; highly relevant for a real
+  mower, and exactly the category of thing field trials would surface).
+- **The control node is a simple P-controller on heading error**, not pure
+  pursuit, a Stanley controller, or MPC: same category of problem
+  (convert a planned path into actuator commands), much simpler math.
+- **The safety monitor is software-only**, running in the same ROS2 graph
+  as everything else. If the ROS2 process or underlying OS crashes, this
+  safety function stops working too, which is unacceptable for a real
+  safety-critical function. A real system needs an independent hardware
+  safety channel (safety-rated PLC, hardwired e-stop, a watchdog that cuts
+  power at the actuator level) that doesn't depend on software health.
+  **This is exactly the kind of single-point-of-failure a real HARA would
+  identify and require an independent hardware mitigation for.** It's the
+  most direct honest connection this project has to the JD's functional
+  safety / HARA requirement.
+- **The CAN/drive-by-wire layer is entirely simulated**: there is no real
+  CAN bus, no DBC file, no transceiver hardware. `vehicle_interface_node`
+  demonstrates the architecture and interface contract (command
+  translation, arbitration-ID-style framing, timeout/heartbeat safety
+  behaviour) using plain Python objects, not real bit-packed frames on a
+  real bus. A production implementation would use a library like
+  `python-can` against real hardware, with signal encoding defined by an
+  actual DBC file matching the vehicle ECU's specification.
+- **`vehicle_interface_node`'s output is not yet wired into
+  `vehicle_model_node`**. They were built and verified independently; a
+  next step would be connecting `vehicle_interface_node`'s
+  `actuated_cmd` topic as the vehicle model's actual input, so the
+  timeout/heartbeat safety behaviour also gates real vehicle motion in
+  simulation, not just the interface layer's own status output.
+- **No field testing, no real hardware-in-the-loop, no HARA, no safety
+  case.** This project demonstrates the software engineering patterns
+  underlying these activities, not the activities themselves.
+
+## Running it
+
+Requires ROS2 Jazzy Jalisco on Ubuntu 24.04 (or adjust for your distro).
+
+```bash
+cd ~/mower_ws
+colcon build
+source install/setup.bash
+```
+
+Then, in separate terminals:
+
+```bash
+ros2 run mower_sensors sensor_node
+ros2 run mower_localisation localisation_node
+ros2 run mower_planner planner_node
+ros2 run mower_control vehicle_model_node
+ros2 run mower_control control_node
+ros2 run mower_safety safety_monitor_node
+ros2 run mower_vehicle_interface vehicle_interface_node
+```
+
+Useful topics to watch:
+
+```bash
+ros2 topic echo /safety/status              # SAFE / UNSAFE_STOPPED, flips live
+ros2 topic echo /vehicle/odom --field pose.pose.position   # vehicle position
+ros2 topic echo /vehicle_interface/bus_status               # simulated CAN status
+```
+
+## What I'd do next with more time
+
+- Wire `vehicle_interface_node` into `vehicle_model_node` to close the full
+  chain end to end.
+- Replace the complementary filter with `robot_localization`'s `ekf_node`.
+- Add a coverage planner (boustrophedon sweep) alongside the A* planner.
+- Add an RViz2 config file for one-command visualisation of the path,
+  vehicle marker, and safety state together.
+- Sketch (even informally, not a full HARA) a hazard list for this specific
+  system as a talking point, e.g. "sensor dropout during safe-stop
+  evaluation," "command timeout threshold too permissive," "single software
+  safety channel," and how each would be mitigated in a real design.
