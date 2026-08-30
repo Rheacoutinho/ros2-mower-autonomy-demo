@@ -4,7 +4,8 @@ import math
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Point
+from visualization_msgs.msg import Marker
 
 
 class PlannerNode(Node):
@@ -18,34 +19,31 @@ class PlannerNode(Node):
     here because it's the most universally recognisable planning algorithm
     to implement and explain clearly in limited time. The underlying search
     algorithm (A*) is the same class of algorithm real planners use (e.g.
-    Nav2's NavFn/Smac planners are also grid-search-based) -- only the map
+    Nav2's NavFn/Smac planners are also grid-search-based); only the map
     input and the point-to-point (vs coverage) framing are simplified.
     """
 
     def __init__(self):
         super().__init__('planner_node')
 
-        # Synthetic occupancy grid: 0 = free, 1 = obstacle.
-        # Represents a small ~10m x 10m patch at 1m resolution.
         self.grid_width = 10
         self.grid_height = 10
-        self.resolution = 1.0  # metres per cell
+        self.resolution = 1.0
         self.grid = self.build_synthetic_grid()
 
         self.start = (0, 0)
         self.goal = (9, 9)
 
         self.path_pub = self.create_publisher(Path, 'planner/path', 10)
+        self.obstacle_marker_pub = self.create_publisher(
+            Marker, 'planner/obstacle_marker', 10)
 
-        # Plan once, shortly after startup, then publish repeatedly so
-        # late-joining subscribers (e.g. RViz2) still see it.
         self.timer = self.create_timer(2.0, self.plan_and_publish)
 
         self.get_logger().info('Planner node started (grid A*)')
 
     def build_synthetic_grid(self):
         grid = [[0 for _ in range(self.grid_width)] for _ in range(self.grid_height)]
-        # A simple wall obstacle with a gap, so the path has to route around it
         for y in range(0, 7):
             grid[y][5] = 1
         return grid
@@ -91,10 +89,12 @@ class PlannerNode(Node):
                     f_score = tentative_g + self.heuristic(neighbor, goal)
                     heapq.heappush(open_set, (f_score, neighbor))
 
-        return None  # no path found
+        return None
 
     def plan_and_publish(self):
         cell_path = self.astar(self.start, self.goal)
+
+        self.publish_obstacle_marker()
 
         if cell_path is None:
             self.get_logger().warn('No path found from start to goal')
@@ -114,6 +114,39 @@ class PlannerNode(Node):
             msg.poses.append(pose)
 
         self.path_pub.publish(msg)
+
+    def publish_obstacle_marker(self):
+        """
+        Renders the wall cells from self.grid as a CUBE_LIST, so the
+        obstacle the A* path is routing around is actually visible in
+        RViz2, not just an invisible input to the search.
+        """
+        marker = Marker()
+        marker.header.frame_id = 'map'
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = 'obstacles'
+        marker.id = 0
+        marker.type = Marker.CUBE_LIST
+        marker.action = Marker.ADD
+        marker.scale.x = self.resolution * 0.9
+        marker.scale.y = self.resolution * 0.9
+        marker.scale.z = 0.5
+        marker.color.r = 0.8
+        marker.color.g = 0.1
+        marker.color.b = 0.1
+        marker.color.a = 1.0
+        marker.pose.orientation.w = 1.0
+
+        for gy in range(self.grid_height):
+            for gx in range(self.grid_width):
+                if self.grid[gy][gx] == 1:
+                    p = Point()
+                    p.x = gx * self.resolution
+                    p.y = gy * self.resolution
+                    p.z = 0.25
+                    marker.points.append(p)
+
+        self.obstacle_marker_pub.publish(marker)
 
 
 def main(args=None):

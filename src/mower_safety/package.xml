@@ -20,4 +20,6 @@
   <export>
     <build_type>ament_python</build_type>
   </export>
+  <depend>visualization_msgs</depend>
+  <depend>std_srvs</depend>
 </package>
