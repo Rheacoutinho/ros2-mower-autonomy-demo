@@ -18,48 +18,30 @@ using synthetic data and simplified algorithms that are fully understandable
 and explainable, rather than opaque or copy-pasted. Nothing here is a black
 box: every design choice is one I can defend and extend on request.
 
-## Architecture                 +------------------+
-                |   sensor_node    |  (GPS, IMU; range computed from
-                +--------+---------+   real vehicle pose vs. wall)
-             +-----------+--------------+
-             v                          v
- +----------------------+      +------------------------+
- |  localisation_node     |      |  safety_monitor_node    |
- |  (complementary        |      |  (independent safe-     |
- |   filter, GPS+IMU)     |      |   stop gate, /safety/    |
- +------------------------+      |   reset override svc)    |
-                                 +-------------^-------------+
-                                                | gates
- +----------------------+      +---------------+-------------+
- |    planner_node        |----> |      control_node            |
- |    (grid A*,            |    |  (waypoint P-controller,      |
- |     obstacle marker)    |    |   ping-pongs same path)        |
- +------------------------+    +---------------+---------------+
-                                                | /cmd_vel_raw
-                                                v
-                                   +----------------------------+
-                                   |   safety_monitor_node        |
-                                   |   (gates /cmd_vel_raw ->      |
-                                   |    /cmd_vel)                   |
-                                   +---------------+----------------+
-                                                    | /cmd_vel
-                +---------------------------------+--------------------------------+
-                v                                                                   v
- +--------------------------------+                              +---------------------------+
- |  vehicle_interface_node          |                              |   vehicle_model_node          |
- |  (simulated CAN / DBW layer,     |                              |  (2D kinematic model,          |
- |   command timeout/heartbeat)     |                              |   RViz2 marker)                 |
- +--------------------------------+                              +---------------------------+
-                |
-                v
- +--------------------------------+
- |   audit_logger_node              |   (also watches safety_monitor_node;
- |   (independent observer,         |    writes JSONL on state transitions
- |    logs safety + CAN state)      |    only, not raw telemetry)
- +--------------------------------+
-(Note: `vehicle_interface_node`'s output is not yet wired into
-`vehicle_model_node`'s input, they are demonstrated independently. Flagged
-explicitly below.)
+## Architecture
+
+```mermaid
+flowchart TB
+    sensor[sensor_node<br/>GPS, IMU, real range]
+    loc[localisation_node<br/>Complementary filter]
+    planner[planner_node<br/>Grid A*, obstacle marker]
+    control[control_node<br/>Waypoint P-controller]
+    safety[safety_monitor_node<br/>Independent safe-stop gate]
+    vehicle[vehicle_model_node<br/>Kinematic model, RViz2 marker]
+    interface[vehicle_interface_node<br/>Simulated CAN / drive-by-wire]
+    audit[audit_logger_node<br/>Logs safety and CAN transitions]
+
+    sensor --> loc
+    sensor -. range .-> safety
+    planner --> control
+    control -- cmd_vel_raw --> safety
+    safety -- gated cmd_vel --> vehicle
+    safety -- gated cmd_vel --> interface
+    safety -. status .-> audit
+    interface -. bus_status .-> audit
+```
+
+*(Dashed arrows are observation-only, not command paths. `vehicle_interface_node`'s output is not yet wired into `vehicle_model_node`'s input, they are demonstrated independently, flagged explicitly below.)*
 
 ## Nodes and packages
 
